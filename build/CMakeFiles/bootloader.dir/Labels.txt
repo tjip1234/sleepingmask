@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/raaf/sleepingmask/build/CMakeFiles/bootloader
+/home/raaf/sleepingmask/build/CMakeFiles/bootloader.rule
+/home/raaf/sleepingmask/build/CMakeFiles/bootloader-complete.rule
+/home/raaf/sleepingmask/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/home/raaf/sleepingmask/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/raaf/sleepingmask/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/raaf/sleepingmask/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/raaf/sleepingmask/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/raaf/sleepingmask/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/raaf/sleepingmask/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
