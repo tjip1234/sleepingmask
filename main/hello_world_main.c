@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <inttypes.h>
+#include <math.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,13 +14,14 @@
 #include "esp_flash.h"
 #include "esp_system.h"
 #include "esp_log.h"
-#include "ads1292.h"
+#include "esp_timer.h"
+#include "max30102.h"
 
 static const char *TAG = "SLEEPINGMASK";
 
 void app_main(void)
 {
-    printf("ADS1292 Sleep Monitoring System\n");
+    printf("MAX30102 Heart Rate Monitor\n");
     
     /* Print chip information */
     esp_chip_info_t chip_info;
@@ -34,76 +36,62 @@ void app_main(void)
     printf("Free heap: %" PRIu32 " bytes\n", esp_get_minimum_free_heap_size());
     printf("\n");
 
-    // Initialize ADS1292
-    ESP_LOGI(TAG, "Initializing ADS1292...");
-    esp_err_t ret = ads1292_init();
+    // Initialize MAX30102
+    ESP_LOGI(TAG, "Initializing MAX30102 Heart Rate Sensor...");
+    esp_err_t ret = max30102_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize ADS1292: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize MAX30102: %s", esp_err_to_name(ret));
         return;
     }
+    
+    // Print sensor information once
+    max30102_print_sensor_info();
 
-    // Start continuous data conversion
-    ESP_LOGI(TAG, "Starting data conversion...");
-    ret = ads1292_start_conversion();
+    ret = max30102_clear_fifo();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start conversion: %s", esp_err_to_name(ret));
-        return;
+        ESP_LOGW(TAG, "Failed to clear FIFO: %s", esp_err_to_name(ret));
     }
 
-    // Print register configuration
-    ads1292_print_registers();
-    
-    ESP_LOGI(TAG, "EOG Configuration: 250 SPS, Gain=4x (±0.6V range)");
-    ESP_LOGI(TAG, "Establishing baseline for EOG detection...");
-    ESP_LOGI(TAG, "Press Ctrl+C to stop");
-    printf("\nEOG Electrode Placement Tips:\n");
-    printf("- Place electrodes around eyes for horizontal/vertical eye movement detection\n");
-    printf("- CH1: Horizontal EOG (left-right eye movements)\n");
-    printf("- CH2: Vertical EOG (up-down eye movements)\n");
-    printf("- Use conductive gel for better signal quality\n");
-    printf("===========================================================================\n");
+    ESP_LOGI(TAG, "MAX30102 Configuration: %.0f Hz sample rate", MAX30102_SAMPLE_RATE_HZ);
+    printf("- Using 300-sample sliding window (3 seconds at 100Hz)\n");
+    printf("- Heart rate analysis every 1 second after 1.5 seconds initial collection\n");
+    printf("- Fixed sample averaging for proper 100Hz operation\n");
+    printf("===========================================================\n");
 
-    ads1292_data_t data;
-    eog_baseline_t baseline;
-    eog_init_baseline(&baseline);
-    
+    max30102_biometrics_t biometrics = {0};
+    uint64_t last_log_time_us = 0;
     uint32_t sample_count = 0;
-    uint32_t movement_count = 0;
-    uint32_t last_movement_time = 0;
-    
+
     while (1) {
-        // Check if new data is available
-        if (ads1292_data_ready()) {
-            ret = ads1292_read_data(&data);
+        if (max30102_is_data_ready()) {
+            max30102_sample_t single_sample;
+            ret = max30102_read_single_sample(&single_sample);
             if (ret == ESP_OK) {
                 sample_count++;
-                
-                // Update baseline calculation
-                eog_update_baseline(&baseline, &data);
-                
-                // Print data every 25th sample to reduce spam (250 SPS / 25 = 10 Hz display)
-                if (sample_count % 25 == 0) {
-                    eog_print_data_with_baseline(&data, &baseline);
+                max30102_calculate_heart_rate(&single_sample, 1, &biometrics);
+                const uint64_t now_us = esp_timer_get_time();
+
+                if (biometrics.valid) {
+                    ESP_LOGI(TAG, "HR %.1f bpm | SpO2 %.1f%% | quality %.1f | strength %.2f | IR %.0f",
+                                biometrics.heart_rate,
+                                biometrics.spo2,
+                                biometrics.quality_metric,
+                                biometrics.signal_strength,
+                                biometrics.ir_dc);
+                    last_log_time_us = now_us;
+                } else {
+                    if (now_us - last_log_time_us > 2000000ULL) { // Every 2 seconds during collection
+                        ESP_LOGW(TAG, "Collecting samples... %d/300 (IR: %.0f)", 
+                                    sample_count > 300 ? 300 : sample_count,
+                                    biometrics.ir_dc);
+                        last_log_time_us = now_us;
+                    }
                 }
-                
-                
-                // Print movement statistics every 1250 samples (5 seconds worth at 250 SPS)
-                if (sample_count % 1250 == 0 && baseline.baseline_established) {
-                    printf("\n--- 5 Second EOG Statistics ---\n");
-                    printf("Total samples: %u, Eye movements detected: %u\n", 
-                           (unsigned int)sample_count, (unsigned int)movement_count);
-                    printf("Baseline CH1: %.6f V, CH2: %.6f V\n", 
-                           baseline.baseline_ch1, baseline.baseline_ch2);
-                    printf("Movement rate: %.1f movements/minute\n", 
-                           (movement_count * 12.0f)); // 5 seconds * 12 = 1 minute
-                    printf("-------------------------------\n\n");
-                }
-            } else {
-                ESP_LOGW(TAG, "Failed to read data: %s", esp_err_to_name(ret));
+            } else if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to read sample: %s", esp_err_to_name(ret));
             }
         }
-        
-        // Small delay to prevent overwhelming the output (250 SPS = every 4ms)
-        vTaskDelay(pdMS_TO_TICKS(2));
+
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }

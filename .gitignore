@@ -2,4 +2,3 @@
 .devcontainer/
 build/*
 graph.py
-build
