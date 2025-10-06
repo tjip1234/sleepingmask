@@ -1,8 +1,5 @@
 #include "max30102.h"
-#include "algorithm.h"
-// Using autocorrelation algorithm instead of filtering
 
-#include <math.h>
 #include <string.h>
 #include <sys/param.h>
 
@@ -14,52 +11,31 @@
 #define I2C_TIMEOUT_MS                  100
 #define MAX30102_DEFAULT_RED_CURRENT    0x28
 #define MAX30102_DEFAULT_IR_CURRENT     0x28
-#define MAX30102_DECIMATION_FACTOR      5
+#define MAX30102_TARGET_SAMPLE_RATE     100  // Target Hz for output
+#define MAX30102_BUFFER_SIZE            512  // Buffer size for samples
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-// No filtering needed - using autocorrelation algorithm
+// Sample rate reporting flag
+#define MAX30102_LOG_SAMPLE_RATE        1
 
 typedef struct {
-	// Circular buffer for continuous processing
-	int32_t ir_buffer[BUFFER_SIZE];
-	int32_t red_buffer[BUFFER_SIZE];
+	// Circular buffer for raw samples
+	int32_t ir_buffer[MAX30102_BUFFER_SIZE];
+	int32_t red_buffer[MAX30102_BUFFER_SIZE];
 	uint16_t buffer_index;
 	bool buffer_full;
 	
-	// Analysis timing
-	uint64_t last_analysis_time;
-	uint32_t samples_since_analysis;
-	
-	// Last calculated values
-	int last_heart_rate;
-	double last_spo2;
-	double r0_value;
-	double auto_correlation_data[1000];  // Match buffer size
-} hr_processing_state_t;
+	// Sample rate tracking
+	uint64_t first_sample_time;
+	uint64_t last_sample_time;
+	uint32_t total_samples;
+	uint32_t samples_in_buffer;
+	float actual_sample_rate;
+} max30102_buffer_state_t;
 
 static const char *TAG = "MAX30102";
 
 static bool s_i2c_initialised = false;
-static hr_processing_state_t s_hr_state;
-
-// Static working buffers to avoid stack overflow
-static int32_t s_ir_work[BUFFER_SIZE];
-static int32_t s_red_work[BUFFER_SIZE];
-
-// Simple heart rate validation
-static int validate_heart_rate(hr_processing_state_t *state, int new_hr) {
-	// Reject impossible heart rate changes (>40 BPM jump)
-	if (state->last_heart_rate > 0 && abs(new_hr - state->last_heart_rate) > 40) {
-		ESP_LOGW(TAG, "HR change too large: %d->%d BPM, keeping previous", state->last_heart_rate, new_hr);
-		return state->last_heart_rate;
-	}
-	return new_hr;
-}
-
-// No filtering needed - using autocorrelation algorithm
+static max30102_buffer_state_t s_buffer_state;
 
 static esp_err_t max30102_i2c_init(void)
 {
@@ -114,27 +90,15 @@ static esp_err_t max30102_read(uint8_t reg, uint8_t *data, size_t len)
 	return i2c_master_write_read_device(MAX30102_I2C_PORT, MAX30102_I2C_ADDR, &reg, 1, data, len, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
 }
 
-// Old FIR functions removed - now using Arduino library FIR implementation
-
-static void max30102_processing_init(hr_processing_state_t *state)
+static void max30102_buffer_init(void)
 {
-	// Initialize autocorrelation algorithm state
-	memset(state->ir_buffer, 0, sizeof(state->ir_buffer));
-	memset(state->red_buffer, 0, sizeof(state->red_buffer));
-	state->buffer_index = 0;
-	state->buffer_full = false;
-	state->last_analysis_time = 0;
-	state->samples_since_analysis = 0;
-	state->last_heart_rate = 0;
-	state->last_spo2 = 0.0;
-	state->r0_value = 0.0;
-	memset(state->auto_correlation_data, 0, sizeof(state->auto_correlation_data));
-	
-	// Initialize time array for algorithm
-	init_time_array();
+	memset(&s_buffer_state, 0, sizeof(s_buffer_state));
+	s_buffer_state.first_sample_time = 0;
+	s_buffer_state.last_sample_time = 0;
+	s_buffer_state.total_samples = 0;
+	s_buffer_state.samples_in_buffer = 0;
+	s_buffer_state.actual_sample_rate = 0.0f;
 }
-
-// Old FFT-based heart rate calculation functions removed - now using PBA algorithm
 
 esp_err_t max30102_init(void)
 {
@@ -193,7 +157,12 @@ esp_err_t max30102_init(void)
 
 	max30102_enable_interrupts(MAX30102_INT_DATA_RDY | MAX30102_INT_A_FULL | MAX30102_INT_ALC_OVF);
 	max30102_clear_interrupts();
-	max30102_processing_init(&s_hr_state);
+	max30102_buffer_init();
+	
+	ESP_LOGI(TAG, "MAX30102 initialized successfully");
+	ESP_LOGI(TAG, "Target sample rate: %d Hz, Buffer size: %d samples", 
+	         MAX30102_TARGET_SAMPLE_RATE, MAX30102_BUFFER_SIZE);
+	
 	return ESP_OK;
 }
 
@@ -285,6 +254,8 @@ esp_err_t max30102_read_fifo(max30102_sample_t *samples, uint8_t *num_samples)
 		return ret;
 	}
 
+	uint64_t now_us = esp_timer_get_time();
+
 	for (uint8_t i = 0; i < to_read; ++i) {
 		const uint8_t *chunk = &buffer[i * MAX30102_BYTES_PER_SAMPLE];
 		uint32_t red = ((uint32_t)chunk[0] << 16) | ((uint32_t)chunk[1] << 8) | chunk[2];
@@ -293,7 +264,37 @@ esp_err_t max30102_read_fifo(max30102_sample_t *samples, uint8_t *num_samples)
 		ir &= 0x3FFFF;
 		samples[i].red = red;
 		samples[i].ir = ir;
-		samples[i].green = 0;
+		
+		// Store in buffer
+		s_buffer_state.ir_buffer[s_buffer_state.buffer_index] = (int32_t)ir;
+		s_buffer_state.red_buffer[s_buffer_state.buffer_index] = (int32_t)red;
+		s_buffer_state.buffer_index++;
+		s_buffer_state.total_samples++;
+		
+		if (s_buffer_state.buffer_index >= MAX30102_BUFFER_SIZE) {
+			s_buffer_state.buffer_index = 0;
+			s_buffer_state.buffer_full = true;
+			
+			// Calculate and log actual sample rate when buffer fills
+			if (s_buffer_state.first_sample_time > 0) {
+				uint64_t time_diff_us = now_us - s_buffer_state.first_sample_time;
+				if (time_diff_us > 0) {
+					s_buffer_state.actual_sample_rate = (float)(MAX30102_BUFFER_SIZE * 1000000ULL) / (float)time_diff_us;
+					
+#if MAX30102_LOG_SAMPLE_RATE
+					ESP_LOGI(TAG, "Buffer full - Actual sample rate: %.2f Hz (target: %d Hz)", 
+					         s_buffer_state.actual_sample_rate, MAX30102_TARGET_SAMPLE_RATE);
+#endif
+				}
+			}
+			s_buffer_state.first_sample_time = now_us;
+		}
+		
+		// Track first sample time
+		if (s_buffer_state.total_samples == 1) {
+			s_buffer_state.first_sample_time = now_us;
+		}
+		s_buffer_state.last_sample_time = now_us;
 	}
 
 	*num_samples = to_read;
@@ -404,146 +405,47 @@ uint8_t max30102_get_fifo_samples_available(void)
 	return (32 + wr_ptr) - rd_ptr;
 }
 
-// Old PBA algorithm removed - now using autocorrelation algorithm
-
-esp_err_t max30102_calculate_heart_rate(max30102_sample_t *samples, uint8_t num_samples, max30102_biometrics_t *bio)
+esp_err_t max30102_get_buffered_samples(int32_t *ir_buffer, int32_t *red_buffer,
+                                        uint16_t *buffer_size, uint16_t *samples_available)
 {
-	if (!samples || !bio || num_samples == 0) {
+	if (!ir_buffer || !red_buffer || !buffer_size || !samples_available) {
 		return ESP_ERR_INVALID_ARG;
 	}
-
-	for (uint8_t i = 0; i < num_samples; ++i) {
-		const int32_t ir = (int32_t)samples[i].ir;
-		const int32_t red = (int32_t)samples[i].red;
-
-		// Skin detection: if raw IR is below 10000, no skin detected
-		if (ir < 10000) {
-			bio->valid = false;
-			bio->heart_rate = 0.0f;
-			bio->ir_dc = (float)ir;
-			bio->red_dc = (float)red;
-			bio->ir_baseline = (float)ir;
-			bio->red_baseline = (float)red;
-			bio->signal_strength = 0.0f;
-			bio->quality_metric = 0.0f;
-			bio->spo2 = 0.0f;
-			return ESP_OK;  // No skin detected - skip processing
-		}
-
-		// Add samples to buffer
-		s_hr_state.ir_buffer[s_hr_state.buffer_index] = ir;
-		s_hr_state.red_buffer[s_hr_state.buffer_index] = red;
-		s_hr_state.buffer_index++;
-
-		if (s_hr_state.buffer_index >= BUFFER_SIZE) {
-			s_hr_state.buffer_index = 0;
-			s_hr_state.buffer_full = true;
-		}
-
-		// Minimal logging - just show progress
-		static bool logged_ready = false;
-		if (s_hr_state.buffer_index == 500 && !logged_ready) {
-			ESP_LOGI(TAG, "Collected %d samples, will output 10-second signal...", s_hr_state.buffer_index);
-			logged_ready = true;
-		}
-
-		// Process every second once we have enough data (200 samples = 4 seconds at 50Hz)
-		uint64_t now_us = esp_timer_get_time();
-		bool should_analyze = false;
+	
+	*buffer_size = MAX30102_BUFFER_SIZE;
+	
+	if (s_buffer_state.buffer_full) {
+		// Buffer is full, copy entire buffer starting from current position
+		*samples_available = MAX30102_BUFFER_SIZE;
+		uint16_t first_part = MAX30102_BUFFER_SIZE - s_buffer_state.buffer_index;
 		
-		if (s_hr_state.buffer_index >= 500) {  // Have at least 5 seconds of data
-			if (s_hr_state.last_analysis_time == 0) {
-				// First analysis
-				should_analyze = true;
-			} else if (now_us - s_hr_state.last_analysis_time >= 1000000ULL) {  // 1 second elapsed
-				should_analyze = true;
-			}
-		}
+		// Copy from current index to end
+		memcpy(ir_buffer, &s_buffer_state.ir_buffer[s_buffer_state.buffer_index], 
+		       first_part * sizeof(int32_t));
+		memcpy(red_buffer, &s_buffer_state.red_buffer[s_buffer_state.buffer_index],
+		       first_part * sizeof(int32_t));
 		
-		if (should_analyze) {
-			ESP_LOGI(TAG, "Starting heart rate analysis (samples: %d)...", s_hr_state.buffer_index);
-			
-			// Use static working buffers to avoid stack overflow
-			memcpy(s_ir_work, s_hr_state.ir_buffer, sizeof(s_ir_work));
-			memcpy(s_red_work, s_hr_state.red_buffer, sizeof(s_red_work));
-
-			// Smooth the signals to reduce noise
-			smooth_signal(s_ir_work);
-			smooth_signal(s_red_work);
-			
-			// Remove DC component and trend
-			uint64_t ir_mean, red_mean;
-			remove_dc_part(s_ir_work, s_red_work, &ir_mean, &red_mean);
-			remove_trend_line(s_ir_work);
-			remove_trend_line(s_red_work);
-
-			ESP_LOGI(TAG, "Calculating autocorrelation...");
-			// Calculate heart rate using autocorrelation (from algorithm.c)
-			double r0;
-			int heart_rate = calculate_heart_rate(s_ir_work, &r0, s_hr_state.auto_correlation_data);
-			
-			ESP_LOGI(TAG, "Calculating SpO2...");
-			// Calculate SpO2
-			double spo2 = spo2_measurement(s_ir_work, s_red_work, ir_mean, red_mean);
-			double correlation = correlation_datay_datax(s_red_work, s_ir_work);
-
-			ESP_LOGI(TAG, "Analysis complete - HR=%d BPM, SpO2=%.1f%%, Correlation=%.3f, R0=%.0f", 
-				heart_rate, spo2, correlation, r0);
-
-			// Update results if values are reasonable  
-			if (heart_rate > 30 && heart_rate < 200) {
-				int validated_hr = validate_heart_rate(&s_hr_state, heart_rate);
-				s_hr_state.last_heart_rate = validated_hr;
-				bio->heart_rate = (float)validated_hr;
-				bio->valid = true;
-			} else {
-				ESP_LOGW(TAG, "Heart rate %d BPM out of range (30-200), keeping previous value", heart_rate);
-				bio->heart_rate = (float)s_hr_state.last_heart_rate;
-				bio->valid = (s_hr_state.last_heart_rate > 0);
-			}
-			
-			if (spo2 > 70 && spo2 < 100) {
-				s_hr_state.last_spo2 = spo2;
-				bio->spo2 = (float)spo2;
-			} else {
-				bio->spo2 = 98.0f;  // Default reasonable value
-			}
-
-			bio->quality_metric = (float)(correlation * 100.0);
-			bio->signal_strength = (float)(r0 / 1000000.0);  // Scale R0 appropriately
-
-			// Update analysis timing for continuous operation
-			s_hr_state.last_analysis_time = now_us;
-			s_hr_state.samples_since_analysis = 0;
-		}
+		// Copy from beginning to current index
+		memcpy(&ir_buffer[first_part], s_buffer_state.ir_buffer,
+		       s_buffer_state.buffer_index * sizeof(int32_t));
+		memcpy(&red_buffer[first_part], s_buffer_state.red_buffer,
+		       s_buffer_state.buffer_index * sizeof(int32_t));
+	} else {
+		// Buffer not full yet, copy what we have
+		*samples_available = s_buffer_state.buffer_index;
+		memcpy(ir_buffer, s_buffer_state.ir_buffer, 
+		       s_buffer_state.buffer_index * sizeof(int32_t));
+		memcpy(red_buffer, s_buffer_state.red_buffer,
+		       s_buffer_state.buffer_index * sizeof(int32_t));
 	}
-
-	// Set baseline values
-	bio->ir_dc = (float)samples[num_samples-1].ir;
-	bio->red_dc = (float)samples[num_samples-1].red;
-	bio->ir_baseline = bio->ir_dc;
-	bio->red_baseline = bio->red_dc;
-
+	
 	return ESP_OK;
 }
 
-
-
-
-
-void max30102_print_biometrics(const max30102_biometrics_t *bio)
+float max30102_get_actual_sample_rate(void)
 {
-	if (!bio) {
-		return;
-	}
-	if (bio->valid) {
-		printf("Heart Rate: %.1f BPM\n", bio->heart_rate);
-	} else {
-		printf("Heart Rate: ---\n");
-	}
+	return s_buffer_state.actual_sample_rate;
 }
-
-
 
 esp_err_t max30102_check_part_id(void)
 {

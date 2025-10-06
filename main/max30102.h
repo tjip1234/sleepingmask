@@ -99,42 +99,11 @@
 #define MAX30102_FIFO_DEPTH                 32
 #define MAX30102_BYTES_PER_SAMPLE           6   // 3 bytes Red + 3 bytes IR
 
-#define MAX30102_SAMPLE_RATE_HZ             100.0f
-#define MAX30102_WARMUP_SECONDS             1.0f
-#define MAX30102_WINDOW_SIZE                128
-#define MAX30102_MAX_HR_WINDOWS             8
-#define MAX30102_DC_MIN                     2000.0f
-#define MAX30102_DC_MAX                     200000.0f
-#define MAX30102_DC_JUMP_RATIO              0.30f
-#define MAX30102_MIN_QUALITY_RATIO          0.05f
-#define MAX30102_MIN_PEAK_MAG               0.5f
-
 // Data structures
 typedef struct {
     uint32_t red;
     uint32_t ir;
-    uint32_t green;
 } max30102_sample_t;
-
-typedef struct {
-    max30102_sample_t samples[MAX30102_FIFO_DEPTH];
-    uint8_t head;
-    uint8_t tail;
-    uint8_t count;
-} max30102_fifo_t;
-
-typedef struct {
-    float heart_rate;
-    float spo2;
-    bool valid;
-    uint64_t last_beat_time;
-    float ir_baseline;
-    float red_baseline;
-    float quality_metric;
-    float signal_strength;
-    float ir_dc;
-    float red_dc;
-} max30102_biometrics_t;
 
 // Function prototypes
 esp_err_t max30102_init(void);
@@ -156,9 +125,10 @@ esp_err_t max30102_read_temperature(float *temperature);
 bool max30102_is_data_ready(void);
 uint8_t max30102_get_fifo_samples_available(void);
 
-// Heart rate calculation functions
-esp_err_t max30102_calculate_heart_rate(max30102_sample_t *samples, uint8_t num_samples, max30102_biometrics_t *bio);
-void max30102_print_biometrics(const max30102_biometrics_t *bio);
+// Buffer access for algorithm processing
+esp_err_t max30102_get_buffered_samples(int32_t *ir_buffer, int32_t *red_buffer, 
+                                        uint16_t *buffer_size, uint16_t *samples_available);
+float max30102_get_actual_sample_rate(void);
 
 // Utility functions
 esp_err_t max30102_check_part_id(void);
