@@ -306,7 +306,6 @@ double algorithm_rms(const int32_t *data, uint16_t size)
 #include "FIR-coeff.h"
 
 // Heart rate smoothing
-static int last_hr_fir = 0;
 static int hr_history[5] = {0};
 static int hr_history_idx = 0;
 

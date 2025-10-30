@@ -5,6 +5,7 @@
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "eeg_spectral.h"
 
 // ADS1292 Pin Definitions (adjust these according to your wiring)
 #define ADS1292_CS_PIN      GPIO_NUM_10
@@ -17,7 +18,7 @@
 #define ADS1292_MOSI_PIN    GPIO_NUM_7
 #define ADS1292_MISO_PIN    GPIO_NUM_2
 #define ADS1292_SCLK_PIN    GPIO_NUM_6
-#define ADS1292_SPI_FREQ    1000000  // 1 MHz
+#define ADS1292_SPI_FREQ    500000   // 500 kHz - slower for reliable communication
 
 // ADS1292 Commands
 #define ADS1292_CMD_WAKEUP  0x02
@@ -45,12 +46,13 @@
 #define ADS1292_REG_RESP2   0x0A
 #define ADS1292_REG_GPIO    0x0B
 
-// Configuration Values for EOG (Eye Movement Detection)
-#define ADS1292_CONFIG1_VAL 0x01  // Continuous conversion, 250 SPS (better for EOG)
-#define ADS1292_CONFIG2_VAL 0x80  // Lead-off comparators disabled, internal reference
-#define ADS1292_CH1SET_VAL  0x30  // Channel 1: Normal operation, Gain = 4, MUX = Normal input
-#define ADS1292_CH2SET_VAL  0x30  // Channel 2: Normal operation, Gain = 4, MUX = Normal input (for differential EOG)
-#define ADS1292_RLD_SENS_VAL 0x00 // RLD disabled for EOG (can cause issues with eye movement detection)
+// Configuration Values for EEG (Frontal electrodes)
+#define ADS1292_CONFIG1_VAL 0x02  // Continuous conversion, 500 SPS (better for EEG)
+#define ADS1292_CONFIG2_VAL 0xA0  // Reference buffer ENABLED (bit 5=1), lead-off comparators disabled, internal reference
+                                   // Binary: 10100000 = bit7(required) + bit5(ref buffer) + bit4-0(reference config)
+#define ADS1292_CH1SET_VAL  0x60  // Channel 1: Powered ON, Gain = 12 (±200mV range, ideal for EEG)
+#define ADS1292_CH2SET_VAL  0x60  // Channel 2: Powered ON, Gain = 12 (±200mV range, ideal for EEG)
+#define ADS1292_RLD_SENS_VAL 0x00 // RLD disabled
 #define ADS1292_LOFF_SENS_VAL 0x00 // Lead-off detection disabled for higher sensitivity
 
 // Alternative gain configurations
@@ -95,5 +97,9 @@ void eog_init_baseline(eog_baseline_t *baseline);
 void eog_update_baseline(eog_baseline_t *baseline, const ads1292_data_t *data);
 void eog_print_data_with_baseline(const ads1292_data_t *data, const eog_baseline_t *baseline);
 bool eog_detect_movement(const ads1292_data_t *data, const eog_baseline_t *baseline, float threshold_mv);
+
+// EEG spectral analysis functions
+void ads1292_calculate_band_power_ch1(const int32_t *ch1_buffer, uint16_t buffer_size, eeg_band_power_t *band_power);
+void ads1292_calculate_band_power_ch2(const int32_t *ch2_buffer, uint16_t buffer_size, eeg_band_power_t *band_power);
 
 #endif // ADS1292_H
