@@ -15,7 +15,7 @@
 #define MAX30102_BUFFER_SIZE            512  // Buffer size for samples
 
 // Sample rate reporting flag
-#define MAX30102_LOG_SAMPLE_RATE        1
+#define MAX30102_LOG_SAMPLE_RATE        0  // Disable sample rate logging
 
 typedef struct {
 	// Circular buffer for raw samples

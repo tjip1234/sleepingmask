@@ -6,6 +6,9 @@
 
 static const char *TAG = "ALGORITHM";
 
+// Debug logging control
+#define ALGORITHM_DEBUG_LOG 0
+
 // Helper function to calculate linear regression coefficients
 static void calculate_linear_regression(double *slope, double *intercept, const int32_t *data, uint16_t size)
 {
@@ -76,9 +79,7 @@ esp_err_t algorithm_process_signals(const int32_t *ir_buffer, const int32_t *red
 	                 result->spo2 <= ALGORITHM_MAX_SPO2 &&
 	                 result->quality > 0.2);
 	
-	ESP_LOGI(TAG, "HR: %d BPM, SpO2: %.1f%%, Correlation: %.3f, Quality: %.3f, Valid: %s",
-	         result->heart_rate, result->spo2, result->correlation, 
-	         result->quality, result->valid ? "YES" : "NO");
+	// Removed verbose logging - results reported in main application
 	
 	free(ir_work);
 	free(red_work);
@@ -269,12 +270,11 @@ int algorithm_calculate_heart_rate(const int32_t *ir_data, uint16_t size, double
 	// Calculate heart rate from best peak
 	if (best_lag > 0 && best_ratio >= AUTOCORR_THRESHOLD_LOW) {
 		double heart_rate = 60.0 / (best_lag * sample_period);
-		ESP_LOGI(TAG, "HR detected: lag=%d, ratio=%.3f, HR=%.1f BPM", 
-		         best_lag, best_ratio, heart_rate);
+		// Return valid heart rate
 		return (int)(heart_rate + 0.5);  // Round to nearest integer
 	}
 	
-	ESP_LOGW(TAG, "No valid HR peak found (best ratio=%.3f at lag=%d)", best_ratio, best_lag);
+	// No valid peak found
 	return 0;
 }
 
