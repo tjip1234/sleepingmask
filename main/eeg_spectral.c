@@ -174,3 +174,62 @@ void eeg_print_band_power(const eeg_band_power_t *band_power)
            band_power->gamma_power, gamma_pct,
            band_power->dominant_freq);
 }
+
+/**
+ * 50Hz/60Hz notch filter using IIR biquad filter
+ * This removes power line interference from EEG signals
+ * 
+ * The filter is a second-order IIR notch filter (biquad)
+ * Transfer function: H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
+ */
+void eeg_notch_filter_50hz(int32_t *signal, uint16_t signal_size,
+                           uint16_t sample_rate_hz, float notch_freq_hz, float q_factor)
+{
+    if (!signal || signal_size == 0 || sample_rate_hz == 0) {
+        return;
+    }
+
+    // Calculate filter coefficients
+    float w0 = 2.0f * M_PI * notch_freq_hz / (float)sample_rate_hz;
+    float alpha = sinf(w0) / (2.0f * q_factor);
+    float cos_w0 = cosf(w0);
+
+    // Biquad filter coefficients (normalized)
+    float b0 = 1.0f;
+    float b1 = -2.0f * cos_w0;
+    float b2 = 1.0f;
+    float a0 = 1.0f + alpha;
+    float a1 = -2.0f * cos_w0;
+    float a2 = 1.0f - alpha;
+
+    // Normalize coefficients
+    b0 /= a0;
+    b1 /= a0;
+    b2 /= a0;
+    a1 /= a0;
+    a2 /= a0;
+
+    // State variables for the filter (Direct Form I)
+    float x1 = 0.0f, x2 = 0.0f;  // Input history
+    float y1 = 0.0f, y2 = 0.0f;  // Output history
+
+    // Apply filter to signal (in-place)
+    for (uint16_t i = 0; i < signal_size; i++) {
+        float x0 = (float)signal[i];
+        
+        // Compute output using difference equation
+        float y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        
+        // Update state variables
+        x2 = x1;
+        x1 = x0;
+        y2 = y1;
+        y1 = y0;
+        
+        // Write filtered output back
+        signal[i] = (int32_t)y0;
+    }
+
+    ESP_LOGI(TAG, "Applied %dHz notch filter (Q=%.1f) to %d samples @ %dHz",
+             (int)notch_freq_hz, q_factor, signal_size, sample_rate_hz);
+}

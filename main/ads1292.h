@@ -47,22 +47,12 @@
 #define ADS1292_REG_GPIO    0x0B
 
 // Configuration Values for EEG (Frontal electrodes)
-#define ADS1292_CONFIG1_VAL 0x02  // Continuous conversion, 500 SPS (better for EEG)
-#define ADS1292_CONFIG2_VAL 0xA0  // Reference buffer ENABLED (bit 5=1), lead-off comparators disabled, internal reference
-                                   // Binary: 10100000 = bit7(required) + bit5(ref buffer) + bit4-0(reference config)
-#define ADS1292_CH1SET_VAL  0x60  // Channel 1: Powered ON, Gain = 12 (±200mV range, ideal for EEG)
-#define ADS1292_CH2SET_VAL  0x60  // Channel 2: Powered ON, Gain = 12 (±200mV range, ideal for EEG)
+#define ADS1292_CONFIG1_VAL 0x02  // Continuous conversion, 500 SPS
+#define ADS1292_CONFIG2_VAL 0xA0  // Reference buffer enabled, internal reference
+#define ADS1292_CH1SET_VAL  0x60  // Channel 1: Powered ON, Gain = 12
+#define ADS1292_CH2SET_VAL  0x60  // Channel 2: Powered ON, Gain = 12
 #define ADS1292_RLD_SENS_VAL 0x00 // RLD disabled
-#define ADS1292_LOFF_SENS_VAL 0x00 // Lead-off detection disabled for higher sensitivity
-
-// Alternative gain configurations
-#define ADS1292_CH1SET_GAIN_1   0x00  // Gain = 1 (±2.4V range)
-#define ADS1292_CH1SET_GAIN_2   0x10  // Gain = 2 (±1.2V range)
-#define ADS1292_CH1SET_GAIN_3   0x20  // Gain = 3 (±0.8V range)
-#define ADS1292_CH1SET_GAIN_4   0x30  // Gain = 4 (±0.6V range)
-#define ADS1292_CH1SET_GAIN_6   0x40  // Gain = 6 (±0.4V range)
-#define ADS1292_CH1SET_GAIN_8   0x50  // Gain = 8 (±0.3V range)
-#define ADS1292_CH1SET_GAIN_12  0x60  // Gain = 12 (±0.2V range)
+#define ADS1292_LOFF_SENS_VAL 0x00 // Lead-off detection disabled
 
 // Data structure for ADS1292 readings
 typedef struct {
@@ -70,14 +60,6 @@ typedef struct {
     int32_t channel1;
     int32_t channel2;
 } ads1292_data_t;
-
-// EOG-specific data structure
-typedef struct {
-    float baseline_ch1;
-    float baseline_ch2;
-    uint32_t sample_count;
-    bool baseline_established;
-} eog_baseline_t;
 
 // Function prototypes
 esp_err_t ads1292_init(void);
@@ -89,14 +71,6 @@ esp_err_t ads1292_write_register(uint8_t reg, uint8_t value);
 esp_err_t ads1292_read_register(uint8_t reg, uint8_t *value);
 void ads1292_print_data(const ads1292_data_t *data);
 float ads1292_convert_to_voltage(int32_t raw_value);
-void ads1292_print_registers(void);
-esp_err_t ads1292_set_gain(uint8_t gain_setting);
-
-// EOG-specific functions
-void eog_init_baseline(eog_baseline_t *baseline);
-void eog_update_baseline(eog_baseline_t *baseline, const ads1292_data_t *data);
-void eog_print_data_with_baseline(const ads1292_data_t *data, const eog_baseline_t *baseline);
-bool eog_detect_movement(const ads1292_data_t *data, const eog_baseline_t *baseline, float threshold_mv);
 
 // EEG spectral analysis functions
 void ads1292_calculate_band_power_ch1(const int32_t *ch1_buffer, uint16_t buffer_size, eeg_band_power_t *band_power);

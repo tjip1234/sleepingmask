@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
 
 static const char *TAG = "ADS1292";
 static spi_device_handle_t spi_handle;
@@ -39,9 +40,8 @@ esp_err_t ads1292_init(void) {
     gpio_config(&io_conf);
 
     // Power up the ADS1292 (AFTER GPIO is configured)
-    ESP_LOGI(TAG, "Powering up ADS1292: Setting PWDN (GPIO %d) HIGH...", ADS1292_PWDN_PIN);
     gpio_set_level(ADS1292_PWDN_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(200)); // Wait for power-up - increased to 200ms
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     // Configure SPI bus
     spi_bus_config_t buscfg = {
@@ -89,8 +89,7 @@ esp_err_t ads1292_init(void) {
         ESP_LOGE(TAG, "Failed to send reset command: %s", esp_err_to_name(ret));
         return ret;
     }
-    ESP_LOGI(TAG, "Reset command sent, waiting 200ms...");
-    vTaskDelay(pdMS_TO_TICKS(200)); // Wait for reset - increased from 100ms
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     // Stop data conversion initially
     uint8_t stop_cmd = ADS1292_CMD_SDATAC;
@@ -115,23 +114,13 @@ esp_err_t ads1292_init(void) {
     uint8_t device_id;
     ret = ads1292_read_register(ADS1292_REG_ID, &device_id);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "ADS1292 Device ID: 0x%02X", device_id);
+        ESP_LOGI(TAG, "Device ID: 0x%02X", device_id);
         if ((device_id & 0xF8) != 0x50) {
-            ESP_LOGW(TAG, "Unexpected device ID. Expected 0x5X, got 0x%02X", device_id);
+            ESP_LOGW(TAG, "Unexpected device ID");
         }
-    } else {
-        ESP_LOGE(TAG, "Failed to read device ID");
-        return ret;
     }
 
-    // Print all register values for debugging
-    ads1292_print_registers();
-
     ESP_LOGI(TAG, "ADS1292 initialized successfully");
-    ESP_LOGI(TAG, "Sample Rate: 500 SPS, Gain: 12x (±200mV range - optimal for EEG)");
-    ESP_LOGI(TAG, "Reference Buffer: ENABLED (internal 2.4V reference)");
-    ESP_LOGI(TAG, "CONFIG: CH1SET=0x%02X, CH2SET=0x%02X, CONFIG1=0x%02X, CONFIG2=0x%02X",
-             ADS1292_CH1SET_VAL, ADS1292_CH2SET_VAL, ADS1292_CONFIG1_VAL, ADS1292_CONFIG2_VAL);
     return ESP_OK;
 }
 
@@ -226,7 +215,7 @@ esp_err_t ads1292_start_conversion(void) {
     gpio_set_level(ADS1292_START_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    ESP_LOGI(TAG, "Started continuous data conversion");
+    ESP_LOGI(TAG, "Started data conversion");
     return ESP_OK;
 }
 
@@ -296,138 +285,66 @@ float ads1292_convert_to_voltage(int32_t raw_value) {
     // VREF = 2.4V, Gain = 12, 2^23 = 8388608
     // With gain=12, input range is ±200mV (ideal for EEG)
     return (float)raw_value * 2.4f / (12.0f * 8388608.0f);
-}void ads1292_print_data(const ads1292_data_t *data) {
+}
+
+void ads1292_print_data(const ads1292_data_t *data) {
     float voltage_ch1 = ads1292_convert_to_voltage(data->channel1);
     float voltage_ch2 = ads1292_convert_to_voltage(data->channel2);
     
-    printf("Status: 0x%06X, CH1: %d (%.6f V), CH2: %d (%.6f V)\n", 
-           (unsigned int)data->status, 
+    printf("CH1: %d (%.6f V), CH2: %d (%.6f V)\n", 
            (int)data->channel1, voltage_ch1,
            (int)data->channel2, voltage_ch2);
 }
 
-esp_err_t ads1292_set_gain(uint8_t gain_setting) {
-    // Stop continuous conversion first
-    uint8_t sdatac_cmd = ADS1292_CMD_SDATAC;
-    spi_transaction_t trans = {
-        .length = 8,
-        .tx_buffer = &sdatac_cmd,
-        .rx_buffer = NULL,
-    };
-    esp_err_t ret = spi_device_transmit(spi_handle, &trans);
-    if (ret != ESP_OK) return ret;
-    
-    vTaskDelay(pdMS_TO_TICKS(10));
-    
-    // Update CH1SET register with new gain
-    ret = ads1292_write_register(ADS1292_REG_CH1SET, gain_setting);
-    if (ret != ESP_OK) return ret;
-    
-    // Restart continuous conversion
-    uint8_t rdatac_cmd = ADS1292_CMD_RDATAC;
-    trans.tx_buffer = &rdatac_cmd;
-    ret = spi_device_transmit(spi_handle, &trans);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    
-    ESP_LOGI(TAG, "Updated gain setting to 0x%02X", gain_setting);
-    return ret;
-}
-
-void ads1292_print_registers(void) {
-    uint8_t reg_value;
-    const char* reg_names[] = {
-        "ID", "CONFIG1", "CONFIG2", "LOFF", "CH1SET", "CH2SET",
-        "RLD_SENS", "LOFF_SENS", "LOFF_STAT", "RESP1", "RESP2", "GPIO"
-    };
-
-    ESP_LOGI(TAG, "=== ADS1292 Register Values ===");
-    for (int i = 0; i < 12; i++) {
-        if (ads1292_read_register(i, &reg_value) == ESP_OK) {
-            if (i == ADS1292_REG_CH1SET || i == ADS1292_REG_CH2SET) {
-                uint8_t gain_bits = (reg_value >> 4) & 0x07;
-                uint8_t mux_bits = reg_value & 0x0F;
-                uint8_t pd_bit = (reg_value >> 7) & 0x01;
-                const char* gain_str[] = {"1", "1", "2", "3", "4", "8", "12", "12"};
-                ESP_LOGI(TAG, "%s (0x%02X): 0x%02X | PD:%d Gain:%sx MUX:0x%X",
-                         reg_names[i], i, reg_value, pd_bit, gain_str[gain_bits], mux_bits);
-            } else {
-                ESP_LOGI(TAG, "%s (0x%02X): 0x%02X", reg_names[i], i, reg_value);
-            }
-        }
-    }
-}
-
-// EOG-specific functions
-void eog_init_baseline(eog_baseline_t *baseline) {
-    baseline->baseline_ch1 = 0.0f;
-    baseline->baseline_ch2 = 0.0f;
-    baseline->sample_count = 0;
-    baseline->baseline_established = false;
-}
-
-void eog_update_baseline(eog_baseline_t *baseline, const ads1292_data_t *data) {
-    float voltage_ch1 = ads1292_convert_to_voltage(data->channel1);
-    float voltage_ch2 = ads1292_convert_to_voltage(data->channel2);
-    
-    if (baseline->sample_count < 1000) { // Establish baseline over first 1000 samples (4 seconds at 250 SPS)
-        baseline->baseline_ch1 = (baseline->baseline_ch1 * baseline->sample_count + voltage_ch1) / (baseline->sample_count + 1);
-        baseline->baseline_ch2 = (baseline->baseline_ch2 * baseline->sample_count + voltage_ch2) / (baseline->sample_count + 1);
-        baseline->sample_count++;
-        
-        if (baseline->sample_count == 1000) {
-            baseline->baseline_established = true;
-            ESP_LOGI(TAG, "Baseline established: CH1=%.6f V, CH2=%.6f V", baseline->baseline_ch1, baseline->baseline_ch2);
-        }
-    } else {
-        // Slowly adapt baseline (very slow adaptation to track long-term drift)
-        baseline->baseline_ch1 = baseline->baseline_ch1 * 0.9999f + voltage_ch1 * 0.0001f;
-        baseline->baseline_ch2 = baseline->baseline_ch2 * 0.9999f + voltage_ch2 * 0.0001f;
-    }
-}
-
-void eog_print_data_with_baseline(const ads1292_data_t *data, const eog_baseline_t *baseline) {
-    float voltage_ch1 = ads1292_convert_to_voltage(data->channel1);
-    float voltage_ch2 = ads1292_convert_to_voltage(data->channel2);
-    
-    if (baseline->baseline_established) {
-        float diff_ch1 = voltage_ch1 - baseline->baseline_ch1;
-        float diff_ch2 = voltage_ch2 - baseline->baseline_ch2;
-        
-        printf("EOG - CH1: %.6f V (Δ%.6f V), CH2: %.6f V (Δ%.6f V), Status: 0x%06X\n", 
-               voltage_ch1, diff_ch1, voltage_ch2, diff_ch2, (unsigned int)data->status);
-    } else {
-        printf("Establishing baseline... (%u/1000) CH1: %.6f V, CH2: %.6f V\n", 
-               (unsigned int)baseline->sample_count, voltage_ch1, voltage_ch2);
-    }
-}
-
-bool eog_detect_movement(const ads1292_data_t *data, const eog_baseline_t *baseline, float threshold_mv) {
-    if (!baseline->baseline_established) {
-        return false;
-    }
-
-    float voltage_ch1 = ads1292_convert_to_voltage(data->channel1);
-    float voltage_ch2 = ads1292_convert_to_voltage(data->channel2);
-
-    float diff_ch1 = fabsf(voltage_ch1 - baseline->baseline_ch1);
-    float diff_ch2 = fabsf(voltage_ch2 - baseline->baseline_ch2);
-
-    float threshold_v = threshold_mv / 1000.0f; // Convert mV to V
-
-    return (diff_ch1 > threshold_v) || (diff_ch2 > threshold_v);
-}
-
 // EEG spectral analysis wrapper functions
 void ads1292_calculate_band_power_ch1(const int32_t *ch1_buffer, uint16_t buffer_size, eeg_band_power_t *band_power) {
-    if (!ch1_buffer || !band_power) {
+    if (!ch1_buffer || !band_power || buffer_size == 0) {
         return;
     }
-    eeg_calculate_band_power(ch1_buffer, buffer_size, 500, band_power);  // 500 SPS
+    
+    // Create a copy of the buffer to apply filtering without modifying the original
+    int32_t *filtered_buffer = (int32_t *)malloc(buffer_size * sizeof(int32_t));
+    if (!filtered_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate memory for filtered buffer");
+        return;
+    }
+    
+    // Copy the original data
+    memcpy(filtered_buffer, ch1_buffer, buffer_size * sizeof(int32_t));
+    
+    // Apply 50Hz notch filter to remove power line interference
+    // Q=30 gives a narrow notch that only affects 50Hz ± ~1.7Hz
+    eeg_notch_filter_50hz(filtered_buffer, buffer_size, 500, 50.0f, 30.0f);
+    
+    // Calculate band power on filtered data
+    eeg_calculate_band_power(filtered_buffer, buffer_size, 500, band_power);  // 500 SPS
+    
+    // Free the temporary buffer
+    free(filtered_buffer);
 }
 
 void ads1292_calculate_band_power_ch2(const int32_t *ch2_buffer, uint16_t buffer_size, eeg_band_power_t *band_power) {
-    if (!ch2_buffer || !band_power) {
+    if (!ch2_buffer || !band_power || buffer_size == 0) {
         return;
     }
-    eeg_calculate_band_power(ch2_buffer, buffer_size, 500, band_power);  // 500 SPS
+    
+    // Create a copy of the buffer to apply filtering without modifying the original
+    int32_t *filtered_buffer = (int32_t *)malloc(buffer_size * sizeof(int32_t));
+    if (!filtered_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate memory for filtered buffer");
+        return;
+    }
+    
+    // Copy the original data
+    memcpy(filtered_buffer, ch2_buffer, buffer_size * sizeof(int32_t));
+    
+    // Apply 50Hz notch filter to remove power line interference
+    // Q=30 gives a narrow notch that only affects 50Hz ± ~1.7Hz
+    eeg_notch_filter_50hz(filtered_buffer, buffer_size, 500, 50.0f, 30.0f);
+    
+    // Calculate band power on filtered data
+    eeg_calculate_band_power(filtered_buffer, buffer_size, 500, band_power);  // 500 SPS
+    
+    // Free the temporary buffer
+    free(filtered_buffer);
 }

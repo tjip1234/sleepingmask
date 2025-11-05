@@ -53,4 +53,14 @@ float eeg_goertzel_band_power(const int32_t *signal, uint16_t signal_size,
 // Print band powers nicely formatted
 void eeg_print_band_power(const eeg_band_power_t *band_power);
 
+// 50Hz notch filter for power line interference removal
+// Applies IIR notch filter to remove 50Hz (or 60Hz) noise
+// signal: input/output buffer (modified in-place)
+// signal_size: number of samples
+// sample_rate_hz: sampling rate (typically 250 Hz for ADS1292)
+// notch_freq_hz: frequency to notch out (50 or 60 Hz)
+// q_factor: quality factor (bandwidth), typical values: 10-35 (higher = narrower notch)
+void eeg_notch_filter_50hz(int32_t *signal, uint16_t signal_size,
+                           uint16_t sample_rate_hz, float notch_freq_hz, float q_factor);
+
 #endif // EEG_SPECTRAL_H
