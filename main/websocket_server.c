@@ -16,7 +16,7 @@ static httpd_handle_t server = NULL;
 
 // Shared buffer for SSE data streaming
 static char sse_hr_buffer[256];
-static char sse_eeg_buffer[300];
+static char sse_eeg_buffer[800];  // Increased for band power data
 static char sse_mpu_buffer[300];
 static bool sse_hr_ready = false;
 static bool sse_eeg_ready = false;
@@ -187,10 +187,16 @@ static const char *html_page =
 "</div>"
 ""
 "<div class='sensor-box eeg'>"
-"<h2>EEG/EOG (ADS1292)</h2>"
-"<div class='value'>CH1: <span id='ch1'>--</span> mV (Δ<span id='ch1-delta'>--</span>)</div>"
-"<div class='value'>CH2: <span id='ch2'>--</span> mV (Δ<span id='ch2-delta'>--</span>)</div>"
-"<div class='timestamp'>Baseline: <span id='baseline-status'>Establishing...</span></div>"
+"<h2>EEG (ADS1292)</h2>"
+"<div class='value'>CH1: <span id='ch1'>--</span> mV | CH2: <span id='ch2'>--</span> mV</div>"
+"<h3>Channel 1 Band Power</h3>"
+"<div>Delta (0.5-4Hz): <span id='ch1-delta'>--</span>% | Theta (4-8Hz): <span id='ch1-theta'>--</span>%</div>"
+"<div>Alpha (8-13Hz): <span id='ch1-alpha'>--</span>% | Beta (13-30Hz): <span id='ch1-beta'>--</span>%</div>"
+"<div>Gamma (30-100Hz): <span id='ch1-gamma'>--</span>% | Dominant: <span id='ch1-dom'>--</span> Hz</div>"
+"<h3>Channel 2 Band Power</h3>"
+"<div>Delta: <span id='ch2-delta'>--</span>% | Theta: <span id='ch2-theta'>--</span>%</div>"
+"<div>Alpha: <span id='ch2-alpha'>--</span>% | Beta: <span id='ch2-beta'>--</span>%</div>"
+"<div>Gamma: <span id='ch2-gamma'>--</span>% | Dominant: <span id='ch2-dom'>--</span> Hz</div>"
 "<div class='timestamp'>Last update: <span id='eeg-time'>--</span></div>"
 "</div>"
 ""
@@ -230,9 +236,24 @@ static const char *html_page =
 "  } else if (data.type === 'eeg') {"
 "    document.getElementById('ch1').textContent = (data.ch1_voltage * 1000).toFixed(3);"
 "    document.getElementById('ch2').textContent = (data.ch2_voltage * 1000).toFixed(3);"
-"    document.getElementById('ch1-delta').textContent = ((data.ch1_voltage - data.ch1_baseline) * 1000).toFixed(3);"
-"    document.getElementById('ch2-delta').textContent = ((data.ch2_voltage - data.ch2_baseline) * 1000).toFixed(3);"
-"    document.getElementById('baseline-status').textContent = data.baseline_established ? 'Established' : 'Establishing...';"
+"    var total1 = data.ch1_bands.total_power;"
+"    var total2 = data.ch2_bands.total_power;"
+"    if (total1 > 0) {"
+"      document.getElementById('ch1-delta').textContent = ((data.ch1_bands.delta_power/total1)*100).toFixed(1);"
+"      document.getElementById('ch1-theta').textContent = ((data.ch1_bands.theta_power/total1)*100).toFixed(1);"
+"      document.getElementById('ch1-alpha').textContent = ((data.ch1_bands.alpha_power/total1)*100).toFixed(1);"
+"      document.getElementById('ch1-beta').textContent = ((data.ch1_bands.beta_power/total1)*100).toFixed(1);"
+"      document.getElementById('ch1-gamma').textContent = ((data.ch1_bands.gamma_power/total1)*100).toFixed(1);"
+"      document.getElementById('ch1-dom').textContent = data.ch1_bands.dominant_freq.toFixed(1);"
+"    }"
+"    if (total2 > 0) {"
+"      document.getElementById('ch2-delta').textContent = ((data.ch2_bands.delta_power/total2)*100).toFixed(1);"
+"      document.getElementById('ch2-theta').textContent = ((data.ch2_bands.theta_power/total2)*100).toFixed(1);"
+"      document.getElementById('ch2-alpha').textContent = ((data.ch2_bands.alpha_power/total2)*100).toFixed(1);"
+"      document.getElementById('ch2-beta').textContent = ((data.ch2_bands.beta_power/total2)*100).toFixed(1);"
+"      document.getElementById('ch2-gamma').textContent = ((data.ch2_bands.gamma_power/total2)*100).toFixed(1);"
+"      document.getElementById('ch2-dom').textContent = data.ch2_bands.dominant_freq.toFixed(1);"
+"    }"
 "    document.getElementById('eeg-time').textContent = now;"
 "  } else if (data.type === 'mpu') {"
 "    document.getElementById('ax').textContent = data.accel_x.toFixed(2);"
@@ -313,10 +334,18 @@ esp_err_t websocket_send_eeg(const eeg_packet_t *data)
     
     snprintf(sse_eeg_buffer, sizeof(sse_eeg_buffer),
              "{\"type\":\"eeg\",\"ch1_voltage\":%.6f,\"ch2_voltage\":%.6f,"
-             "\"ch1_baseline\":%.6f,\"ch2_baseline\":%.6f,\"baseline_established\":%s,\"timestamp\":%llu}",
+             "\"ch1_bands\":{\"delta_power\":%.2e,\"theta_power\":%.2e,\"alpha_power\":%.2e,"
+             "\"beta_power\":%.2e,\"gamma_power\":%.2e,\"total_power\":%.2e,\"dominant_freq\":%.1f},"
+             "\"ch2_bands\":{\"delta_power\":%.2e,\"theta_power\":%.2e,\"alpha_power\":%.2e,"
+             "\"beta_power\":%.2e,\"gamma_power\":%.2e,\"total_power\":%.2e,\"dominant_freq\":%.1f},"
+             "\"timestamp\":%llu}",
              data->ch1_voltage, data->ch2_voltage,
-             data->ch1_baseline, data->ch2_baseline,
-             data->baseline_established ? "true" : "false",
+             data->ch1_bands.delta_power, data->ch1_bands.theta_power, data->ch1_bands.alpha_power,
+             data->ch1_bands.beta_power, data->ch1_bands.gamma_power, data->ch1_bands.total_power,
+             data->ch1_bands.dominant_freq,
+             data->ch2_bands.delta_power, data->ch2_bands.theta_power, data->ch2_bands.alpha_power,
+             data->ch2_bands.beta_power, data->ch2_bands.gamma_power, data->ch2_bands.total_power,
+             data->ch2_bands.dominant_freq,
              data->timestamp);
     sse_eeg_ready = true;
     

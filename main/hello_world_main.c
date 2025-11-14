@@ -18,11 +18,13 @@
 #include "esp_timer.h"
 #include "ads1292.h"
 #include "eeg_spectral.h"
+#include "websocket_server.h"
 
 static const char *TAG = "SLEEPINGMASK";
 
 // Display interval in milliseconds
 #define DISPLAY_INTERVAL_MS    100   // Update display every 100ms (10Hz)
+#define WS_UPDATE_INTERVAL_MS  100   // Send to WebSocket every 100ms
 
 // EEG spectral analysis parameters
 #define EEG_BUFFER_SIZE        500   // 1 second of data at 500 SPS
@@ -47,6 +49,12 @@ void app_main(void)
     }
     printf("  Free heap: %" PRIu32 " bytes\n", esp_get_minimum_free_heap_size());
     printf("\n");
+
+    // Initialize WebSocket Server
+    ESP_LOGI(TAG, "Initializing WebSocket Server...");
+    if (websocket_server_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to initialize WebSocket server, continuing without it...");
+    }
 
     // Initialize ADS1292
     ESP_LOGI(TAG, "Initializing ADS1292...");
@@ -76,6 +84,7 @@ void app_main(void)
     uint32_t sample_count = 0;
     uint64_t last_display_time = 0;
     uint64_t last_band_update_time = 0;
+    uint64_t last_ws_update_time = 0;
     ads1292_data_t data;
 
     // EEG signal buffers for spectral analysis
@@ -131,6 +140,19 @@ void app_main(void)
                     printf("\n");
 
                     last_band_update_time = now;
+                }
+
+                // Send data via WebSocket
+                if (now - last_ws_update_time >= WS_UPDATE_INTERVAL_MS * 1000) {
+                    eeg_packet_t eeg_packet = {
+                        .ch1_voltage = voltage_ch1,
+                        .ch2_voltage = voltage_ch2,
+                        .ch1_bands = ch1_band_power,
+                        .ch2_bands = ch2_band_power,
+                        .timestamp = now
+                    };
+                    websocket_send_eeg(&eeg_packet);
+                    last_ws_update_time = now;
                 }
             }
         }

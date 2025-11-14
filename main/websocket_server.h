@@ -5,6 +5,7 @@
 #include "max30102.h"
 #include "ads1292.h"
 #include "mpu6050.h"
+#include "eeg_spectral.h"
 
 // WebSocket server configuration
 #define WS_SERVER_PORT 80
@@ -20,9 +21,8 @@ typedef struct {
 typedef struct {
     float ch1_voltage;
     float ch2_voltage;
-    float ch1_baseline;
-    float ch2_baseline;
-    bool baseline_established;
+    eeg_band_power_t ch1_bands;
+    eeg_band_power_t ch2_bands;
     uint64_t timestamp;
 } eeg_packet_t;
 
